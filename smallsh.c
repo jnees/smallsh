@@ -198,7 +198,7 @@ int main(){
         } else {
             parseCommand(userInput, &cmd);
             // Debugging
-            // printf("arg 0: %s\n", cmd.args[0]);
+            printf("arg 0: %s\n", cmd.args[0]);
             // printf("arg 1: %s\n", cmd.args[1]);
             // printf("arg 2: %s\n", cmd.args[2]); 
         }
@@ -208,10 +208,9 @@ int main(){
            cd, exit, and status
         --------------------------------------------------------*/
         cd = strncmp(cmd.args[0], "cd", 2);
-        if(cd == 0){
+        if(cd == 0 && strlen(cmd.args[0]) == 2){
             changeDir(&cmd);
         }
-
     }
     
 }
