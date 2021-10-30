@@ -10,12 +10,18 @@
 #include <limits.h>
 #include <errno.h>
 
+#define MAX_PIDS 512
+#define MAX_ARG_LEN 2048
+#define MAX_PID_LEN 6
+
+
 typedef struct {
-    char args[512][2049];
-    char redir_path_in[2049];
-    char redir_path_out[2049];
+    char args[MAX_PIDS][MAX_ARG_LEN + 1];
+    char redir_path_in[MAX_ARG_LEN + 1];
+    char redir_path_out[MAX_ARG_LEN + 1];
     bool background;
 } Command;
+
 
 /**********************************************************************
     Function: parseCommand(userInput string, Command *cmd):
@@ -41,10 +47,10 @@ void parseCommand(char * input, Command *cmd){
     int pid = getpid();
     char* pidstr = NULL;
     char* temp = NULL;
-    temp = malloc(2048);
+    temp = malloc(MAX_ARG_LEN);
 
     // Get process id string to insert into variable expansions
-    pidstr = malloc(7);
+    pidstr = malloc(MAX_PID_LEN + 1);
     sprintf(pidstr, "%d", pid);
 
     // Parse Commands from userInput into struct
@@ -133,6 +139,54 @@ void printCWD(void){
     free(buf);
 }
 
+/**********************************************************************
+ * insertPID(*PIDS, pid)
+ * Add a new pid to the PIDS array
+**********************************************************************/
+void insertPID(int *PIDS, int pid){
+
+    // Loop through array, set value to 0 if found
+    for(int i = 0; i < MAX_PIDS; i++){
+        if (PIDS[i] == 0){
+            PIDS[i] = pid;
+            return;
+        }
+    }
+}
+
+/**********************************************************************
+ * printPIDS(*PIDS, pid)
+ * Print the list of PIDs to the standard out. For Debugging.
+**********************************************************************/
+void printPIDS(int *PIDS){
+    for(int i = 0; i < MAX_PIDS; i++){
+        if (PIDS[i] != 0){
+            printf("PIDS[%d]: %d\n", i, PIDS[i]);
+        }
+    }
+}
+
+
+/**********************************************************************
+  removePID(*PIDS, pid)
+  Remove a given pid from the PIDS array. Does nothing if pid is
+  not found in PIDS array.
+ 
+  Args:
+    *PIDS - pointer to process ids array.
+    pid - (int) process id.
+
+  Returns:
+    none
+**********************************************************************/
+void removePID(int *PIDS, int pid){
+    for(int i = 0; i < MAX_PIDS; i++){
+        if (PIDS[i] == pid){
+            PIDS[i] = 0;
+            return;
+        }
+    }
+}
 
 /**********************************************************************
     Function: cd(Command *cmd)
@@ -170,13 +224,31 @@ void changeDir(Command *cmd){
 }
     
 /**********************************************************************
+    Function: exitProgram(*PIDS)
+
+    Exits the program and any child processes that may still be running.
+
+    Args:
+        Pointer to list of process ids
+************************************************************************/ 
+int exitProgram(int *PIDs){
+
+    // Kill any remaining PIDs  TODO
+
+    // exit the program.
+    exit(0);
+}
+
+/**********************************************************************
     Function: main ()
 
 ************************************************************************/ 
 
 int main(){
-    char userInput[2049];
+    char userInput[MAX_ARG_LEN + 1];
+    int PIDS[MAX_PIDS] = { 0 };
     int cd;
+    int exit;
 
     // Main Prompt
     command_prompt:
@@ -187,7 +259,7 @@ int main(){
 
         // Prompt and get input
         printf(": ");
-        fgets(userInput, 2048, stdin);
+        fgets(userInput, MAX_ARG_LEN, stdin);
         
         // Trim string for training /n char
         userInput[strcspn(userInput, "\n")] = 0;
@@ -198,7 +270,7 @@ int main(){
         } else {
             parseCommand(userInput, &cmd);
             // Debugging
-            printf("arg 0: %s\n", cmd.args[0]);
+            // printf("arg 0: %s\n", cmd.args[0]);
             // printf("arg 1: %s\n", cmd.args[1]);
             // printf("arg 2: %s\n", cmd.args[2]); 
         }
@@ -207,10 +279,24 @@ int main(){
          Handle built in commands
            cd, exit, and status
         --------------------------------------------------------*/
+        // CD
         cd = strncmp(cmd.args[0], "cd", 2);
         if(cd == 0 && strlen(cmd.args[0]) == 2){
             changeDir(&cmd);
         }
+
+        // Exit
+        exit = strncmp(cmd.args[0], "exit", 4);
+        if(exit == 0 && strlen(cmd.args[0]) == 4){
+            exitProgram(PIDS);
+        }
+
+        // TEST PID helpers
+        insertPID(PIDS, 14);
+        insertPID(PIDS, 24);
+        printPIDS(PIDS);
+        removePID(PIDS, 24);
+        printPIDS(PIDS);
     }
     
 }
