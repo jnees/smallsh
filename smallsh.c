@@ -10,13 +10,14 @@
 #include <limits.h>
 #include <errno.h>
 
+#define MAX_ARGS 512
 #define MAX_PIDS 512
 #define MAX_ARG_LEN 2048
 #define MAX_PID_LEN 6
 
 
 typedef struct {
-    char args[MAX_PIDS][MAX_ARG_LEN + 1];
+    char args[MAX_ARGS + 1][MAX_ARG_LEN + 1];
     char redir_path_in[MAX_ARG_LEN + 1];
     char redir_path_out[MAX_ARG_LEN + 1];
     bool background;
@@ -125,6 +126,8 @@ void parseCommand(char * input, Command *cmd){
         token = strtok(NULL, " "); 
     }
 
+    strcpy(cmd->args[argNumber + 1], "\0");
+
     free(pidstr);
     free(temp);
 }
@@ -159,11 +162,13 @@ void insertPID(int *PIDS, int pid){
  * Print the list of PIDs to the standard out. For Debugging.
 **********************************************************************/
 void printPIDS(int *PIDS){
+    printf("PID LIST: \n");
     for(int i = 0; i < MAX_PIDS; i++){
         if (PIDS[i] != 0){
             printf("PIDS[%d]: %d\n", i, PIDS[i]);
         }
     }
+    printf("--END PID LIST--\n");
 }
 
 
@@ -240,6 +245,25 @@ int exitProgram(int *PIDs){
 }
 
 /**********************************************************************
+    Function: status()
+    Print either the exit status or the terminating signal of the last
+    foreground process executed by the shell. If not foreground process
+    has been run yet, returns 0. Does not consider cd, exit, or status
+    as foreground processes.
+
+    Args:
+        None
+
+    Returns:
+        None: 
+
+************************************************************************/ 
+void getStatus(void){
+    int status = 0;
+    printf("Status: %d\n", status);
+}
+
+/**********************************************************************
     Function: main ()
 
 ************************************************************************/ 
@@ -249,6 +273,7 @@ int main(){
     int PIDS[MAX_PIDS] = { 0 };
     int cd;
     int exit;
+    int status;
 
     // Main Prompt
     command_prompt:
@@ -291,12 +316,78 @@ int main(){
             exitProgram(PIDS);
         }
 
+        // Status -> TODO
+        status = strncmp(cmd.args[0], "status", 6);
+        if(status == 0 && strlen(cmd.args[0]) == 6){
+            getStatus();
+        }
+
+        /*-------------------------------------------------------
+         Handle other commands
+         If the user enters a command other than cd, exit, or
+         status, the shell will try to execute the command
+         from the HOME directory in a new child process.
+        --------------------------------------------------------*/
+
+        // Other commands
+        if (cd != 0 && exit != 0 && status != 0){
+            // Fork child process
+            int childExitStatus;
+            pid_t childPid = fork();
+
+            // Add child process to process list.
+            insertPID(PIDS, childPid);
+
+            switch(childPid){
+
+                // Case -> Fork error
+                case -1:
+                    perror("fork() failed.");
+                    // exit(1);
+                    break;
+
+                // Case -> Child Process
+                case 0:;
+                    
+                    // printf("Arg[0]: %s\n", cmd.args[0]);
+                    // printf("Arg[1]: %s\n", cmd.args[1]);
+                    // printf("Arg[2]: %d\n", strcmp(cmd.args[2], ""));
+                    
+                    char *newargv[513] = {};
+                    for (int i=0;i<513;i++){
+                        if(strcmp(cmd.args[i], "") == 0){
+                            newargv[i] = NULL;
+                        } else {
+                            newargv[i] = cmd.args[i];
+                        }
+                    }
+                    newargv[513] = NULL;
+                    execvp(newargv[0], newargv);
+                    removePID(PIDS, childPid);
+
+                    break;
+
+                // Case -> Parent Process
+                default:
+                    // printPIDS(PIDS);
+                    childPid = waitpid(-1, &childExitStatus, 0);
+                    // printf("after: %d\n", childPid);
+
+            }
+        }
+
+
+        // printPIDS(PIDS);
+
+        // check child processes
+
+
         // TEST PID helpers
-        insertPID(PIDS, 14);
-        insertPID(PIDS, 24);
-        printPIDS(PIDS);
-        removePID(PIDS, 24);
-        printPIDS(PIDS);
+        // insertPID(PIDS, 14);
+        // insertPID(PIDS, 24);
+        // printPIDS(PIDS);
+        // removePID(PIDS, 24);
+        // printPIDS(PIDS);
     }
     
 }
