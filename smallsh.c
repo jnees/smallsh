@@ -9,6 +9,7 @@
 #include <stdbool.h>
 #include <limits.h>
 #include <errno.h>
+#include <signal.h>
 
 #define MAX_ARGS 512
 #define MAX_PIDS 512
@@ -22,7 +23,6 @@ typedef struct {
     char redir_path_out[MAX_ARG_LEN + 1];
     bool background;
 } Command;
-
 
 /**********************************************************************
     Function: parseCommand(userInput string, Command *cmd):
@@ -263,7 +263,9 @@ int main(){
     int exit_command;
     int status;
     pid_t childPid = 0;
-    int childExitStatus = 0;
+    int wstatus = 0;
+    int lastForegroundPID = 0;
+    int lastForegroundStatus = 0;
 
 
     // Main Prompt
@@ -326,13 +328,13 @@ int main(){
         status = strncmp(cmd.args[0], "status", 6);
         if(status == 0 && strlen(cmd.args[0]) == 6){
             // Case -> Child has exited
-            if(WIFEXITED(childExitStatus)){
-                printf("Process %d exited. Status = %d\n", childPid, WEXITSTATUS(childExitStatus));
-            } else if (WIFSIGNALED(childExitStatus)){
-                printf("The processed received a signal: %d\n", WTERMSIG(childExitStatus));
-            } else if (WIFSTOPPED(childExitStatus)){
-                printf("The process was stopped by signal %d\n", WSTOPSIG(childExitStatus));
-            } else if(WIFCONTINUED(childExitStatus)){
+            if(WIFEXITED(lastForegroundStatus)){
+                printf("Last foreground process, pid %d, exited with status %d\n", lastForegroundPID, WEXITSTATUS(lastForegroundStatus));
+            } else if (WIFSIGNALED(lastForegroundStatus)){
+                printf("The processed received a signal: %d\n", WTERMSIG(lastForegroundStatus));
+            } else if (WIFSTOPPED(lastForegroundStatus)){
+                printf("The process was stopped by signal %d\n", WSTOPSIG(lastForegroundStatus));
+            } else if(WIFCONTINUED(lastForegroundStatus)){
                 printf("Process is resumed.\n");
             }
         }
@@ -348,9 +350,6 @@ int main(){
         if (cd != 0 && exit_command != 0 && status != 0){
             // Fork child process
             childPid = fork();
-
-            // Add child process to process list.
-            insertPID(PIDS, childPid);
 
             switch(childPid){
 
@@ -386,14 +385,14 @@ int main(){
                         sourceFD = open(cmd.redir_path_in, O_RDONLY);
                         if (sourceFD == -1) { 
                             perror("source open()"); 
-                            exit(1); 
+                            exit(EXIT_FAILURE); 
 	                    }
 
                         // Redirect the Input stream (0) to the sourceFD
                         result = dup2(sourceFD, 0);
                         if (result == -1){
                             perror("target dup2() - Source");
-                            exit(2);
+                            exit(EXIT_FAILURE);
                         }
 
                     }
@@ -404,7 +403,7 @@ int main(){
                         targetFD = open(cmd.redir_path_out, O_WRONLY | O_CREAT | O_TRUNC, 0644);
                         if (targetFD == -1) { 
                             perror("target open()"); 
-                            exit(1); 
+                            exit(EXIT_FAILURE); 
                         } else {
                             printf("File sucessfully made.");
                         }
@@ -413,19 +412,63 @@ int main(){
                         result = dup2(targetFD, 1);
                         if (result == -1){
                             perror("target dup2() - Destination");
-                            exit(2);
+                            exit(EXIT_FAILURE);
                         }
                     }
 
                     // Execute the command
                     execvp(newargv[0], newargv);
                     perror("Execvp");
+                    exit(EXIT_FAILURE);
+
 
                 // Case -> Parent Process
                 default:
-                    // sleep(1);
-                    // Monitor child process
-                    waitpid(0, &childExitStatus, WNOHANG);
+                    // Monitor child process -> Foreground child process (blocking)
+                    if (cmd.background == 0){
+                        lastForegroundPID = childPid;
+                        childPid = waitpid(childPid, &wstatus, 0);
+                        lastForegroundStatus = wstatus;
+                    }
+
+                    // Monitor child process -> Background child process. (non-blocking)
+                    if (cmd.background == 1){
+                        /***********************************************
+                        When a process is launched;
+                            1. Announce it.
+                            2. Add to PIDs list.
+                        After Every iteration:
+                            1. Check every PID in list using waitpid( WNOHANG )
+                            2. If childPid returned is not 0, announce that
+                            the process has finished and its exitstatus
+                            3. Also if finished, remove from PIDs list.
+                        ************************************************/
+                        // Announce and add to PID list for tracking.
+                        printf("Executing child process %d in the background.\n", childPid);
+                        insertPID(PIDS, childPid);
+
+
+                    }
+
+                    // Check each Child process for completion
+                    for(int i = 0; i < MAX_PIDS; i++){
+                        if (PIDS[i] != 0){
+                            childPid = waitpid(PIDS[i], &wstatus, WNOHANG);
+
+                            // If Child has completed, announce status and remove from PIDS
+                            if(childPid != 0){
+                                if(WIFEXITED(wstatus)){
+                                    printf("Background process, pid %d, exited with status %d\n", childPid, WEXITSTATUS(wstatus));
+                                } else if (WIFSIGNALED(wstatus)){
+                                    printf("The background process, pid %d, was terminated by signal: %d\n", childPid, WTERMSIG(wstatus));
+                                }
+                                removePID(PIDS, childPid);
+                            }
+                        }
+                    }
+
+
+                    // End of Parent Process
                     break;
             }
         }
