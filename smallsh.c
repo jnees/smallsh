@@ -238,29 +238,17 @@ void changeDir(Command *cmd){
 ************************************************************************/ 
 int exitProgram(int *PIDs){
 
-    // Kill any remaining PIDs  TODO
-
-    // exit the program.
-    exit(0);
-}
-
-/**********************************************************************
-    Function: status()
-    Print either the exit status or the terminating signal of the last
-    foreground process executed by the shell. If not foreground process
-    has been run yet, returns 0. Does not consider cd, exit, or status
-    as foreground processes.
-
-    Args:
-        None
-
-    Returns:
-        None: 
-
-************************************************************************/ 
-void getStatus(void){
-    int status = 0;
-    printf("Status: %d\n", status);
+    // wait for remaining children and exit.
+    while (1){
+        int res = wait(NULL);
+        if (res == -1){
+            printf("Exiting...\n");
+            exit(0);
+        } else {
+            printf("Process %d finished...\n", res);
+        }
+    }
+    
 }
 
 /**********************************************************************
@@ -272,24 +260,42 @@ int main(){
     char userInput[MAX_ARG_LEN + 1];
     int PIDS[MAX_PIDS] = { 0 };
     int cd;
-    int exit;
+    int exit_command;
     int status;
+    pid_t childPid = 0;
+    int childExitStatus = 0;
+
 
     // Main Prompt
     command_prompt:
     while(1){
-        // Reset command struct
+    
+        /**********************************************************
+         Reset command struct -> 
+         This program reuses the commend struct for each new 
+         command in the process.
+        ***********************************************************/
         Command cmd = {};
-        cmd.background = false;
 
-        // Prompt and get input
+        // Clear in/out redirect paths
+        cmd.background = false;
+        for(int i = 0; cmd.redir_path_out[i] != 0; i++){
+            cmd.redir_path_out[i] = 0;
+        }
+
+        for(int i = 0; cmd.redir_path_in[i] != 0; i++){
+            cmd.redir_path_out[i] = 0;
+        }
+        
+        // Prompt and get new command input
         printf(": ");
+        fflush(stdout);
         fgets(userInput, MAX_ARG_LEN, stdin);
         
         // Trim string for training /n char
         userInput[strcspn(userInput, "\n")] = 0;
 
-        // Reprompt if comment or blank input
+        // Reprompt if comment or blank input, else parse the new command.
         if ((userInput[0] == '#') | (userInput[0] == '\n')) {
             goto command_prompt;
         } else {
@@ -304,22 +310,31 @@ int main(){
          Handle built in commands
            cd, exit, and status
         --------------------------------------------------------*/
-        // CD
+        // CD -> Change directories. Default is HOME
         cd = strncmp(cmd.args[0], "cd", 2);
         if(cd == 0 && strlen(cmd.args[0]) == 2){
             changeDir(&cmd);
         }
 
-        // Exit
-        exit = strncmp(cmd.args[0], "exit", 4);
-        if(exit == 0 && strlen(cmd.args[0]) == 4){
+        // Exit -> Wait for child processes and exit.
+        exit_command = strncmp(cmd.args[0], "exit", 4);
+        if(exit_command == 0 && strlen(cmd.args[0]) == 4){
             exitProgram(PIDS);
         }
 
-        // Status -> TODO
+        // Status -> Prints status of child process.
         status = strncmp(cmd.args[0], "status", 6);
         if(status == 0 && strlen(cmd.args[0]) == 6){
-            getStatus();
+            // Case -> Child has exited
+            if(WIFEXITED(childExitStatus)){
+                printf("Process %d exited. Status = %d\n", childPid, WEXITSTATUS(childExitStatus));
+            } else if (WIFSIGNALED(childExitStatus)){
+                printf("The processed received a signal: %d\n", WTERMSIG(childExitStatus));
+            } else if (WIFSTOPPED(childExitStatus)){
+                printf("The process was stopped by signal %d\n", WSTOPSIG(childExitStatus));
+            } else if(WIFCONTINUED(childExitStatus)){
+                printf("Process is resumed.\n");
+            }
         }
 
         /*-------------------------------------------------------
@@ -330,10 +345,9 @@ int main(){
         --------------------------------------------------------*/
 
         // Other commands
-        if (cd != 0 && exit != 0 && status != 0){
+        if (cd != 0 && exit_command != 0 && status != 0){
             // Fork child process
-            int childExitStatus;
-            pid_t childPid = fork();
+            childPid = fork();
 
             // Add child process to process list.
             insertPID(PIDS, childPid);
@@ -348,11 +362,7 @@ int main(){
 
                 // Case -> Child Process
                 case 0:;
-                    
-                    // printf("Arg[0]: %s\n", cmd.args[0]);
-                    // printf("Arg[1]: %s\n", cmd.args[1]);
-                    // printf("Arg[2]: %d\n", strcmp(cmd.args[2], ""));
-                    
+                    // Create list of pointers to arg strings with Null terminator at end.
                     char *newargv[513] = {};
                     for (int i=0;i<513;i++){
                         if(strcmp(cmd.args[i], "") == 0){
@@ -361,33 +371,65 @@ int main(){
                             newargv[i] = cmd.args[i];
                         }
                     }
-                    newargv[513] = NULL;
-                    execvp(newargv[0], newargv);
-                    removePID(PIDS, childPid);
+                    newargv[512] = NULL;
 
-                    break;
+                    /***************************************
+                     Handle Redirects
+                    ****************************************/
+                   int targetFD;
+                   int sourceFD;
+                   int result;
+
+                    // Case -> Redirect Input found in command.
+                    if(cmd.redir_path_in[0] != 0){
+                        // Open source file if found
+                        sourceFD = open(cmd.redir_path_in, O_RDONLY);
+                        if (sourceFD == -1) { 
+                            perror("source open()"); 
+                            exit(1); 
+	                    }
+
+                        // Redirect the Input stream (0) to the sourceFD
+                        result = dup2(sourceFD, 0);
+                        if (result == -1){
+                            perror("target dup2() - Source");
+                            exit(2);
+                        }
+
+                    }
+
+                    // Handle Redirect Output if needed
+                    if(cmd.redir_path_out[0] != 0){
+                        // Create or open output file specified by redirect out path.
+                        targetFD = open(cmd.redir_path_out, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                        if (targetFD == -1) { 
+                            perror("target open()"); 
+                            exit(1); 
+                        } else {
+                            printf("File sucessfully made.");
+                        }
+
+                        // Redirect stdout (stream 1) to the redirect out file.
+                        result = dup2(targetFD, 1);
+                        if (result == -1){
+                            perror("target dup2() - Destination");
+                            exit(2);
+                        }
+                    }
+
+                    // Execute the command
+                    execvp(newargv[0], newargv);
+                    perror("Execvp");
 
                 // Case -> Parent Process
                 default:
-                    // printPIDS(PIDS);
-                    childPid = waitpid(-1, &childExitStatus, 0);
-                    // printf("after: %d\n", childPid);
-
+                    // sleep(1);
+                    // Monitor child process
+                    waitpid(0, &childExitStatus, WNOHANG);
+                    break;
             }
         }
-
-
-        // printPIDS(PIDS);
-
-        // check child processes
-
-
-        // TEST PID helpers
-        // insertPID(PIDS, 14);
-        // insertPID(PIDS, 24);
-        // printPIDS(PIDS);
-        // removePID(PIDS, 24);
-        // printPIDS(PIDS);
     }
+    
     
 }
