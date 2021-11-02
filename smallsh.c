@@ -258,14 +258,23 @@ int exitProgram(int *PIDs){
 }
 
 /***********************************************************************
- Function: SIGSTOP_handler()
+ Function: handle_SIGTSTP()
  
  Displays message and toggles foreground_only_mode, which causes
- the shell to ignore & arguments in subsequent commands.
+ the shell to toggle foreground_only_mode, which will ignore 
+ any & symbols found in subsequent user commands.
  ************************************************************************/ 
-void SIGSTOP_handler(void){
-    printf("Entering foreground-only mode (& is now ignored)\n");
+void handle_SIGTSTP(int signo){
+    char* message_on = "Entering foreground-only mode (& is now ignored)\n:\0";
+    char* message_off = "Foreground-only mode off (& no longer ignored)\n:\0";
+
+    // Toggle foreground_only_mode
     foreground_only_mode = !foreground_only_mode;
+
+    // Send appropriate message
+    foreground_only_mode ? write(STDOUT_FILENO, message_on, 53): 
+                            write(STDOUT_FILENO, message_off, 51);
+    return;
 }
 
 
@@ -296,6 +305,12 @@ int main(){
 	SIGINT_action.sa_handler = SIG_IGN;
     sigaction(SIGINT, &SIGINT_action, NULL);
 
+    // Parent uses custom handler for SIGTSTP
+    struct sigaction SIGTSTP_action = {};
+	SIGTSTP_action.sa_handler = handle_SIGTSTP;
+    SIGTSTP_action.sa_flags = SA_RESTART;
+    sigaction(SIGTSTP, &SIGTSTP_action, NULL);
+
 
     /*----------------------------------------------------
      Main Prompt Loop
@@ -303,7 +318,6 @@ int main(){
     -----------------------------------------------------*/
     command_prompt:
     while(1){
-    
         /*---------------------------------------------------------
             Get a new command from the user.
 
@@ -399,14 +413,19 @@ int main(){
                       Signal Handling For Child Processes:
                         1. SIGINT (Child is Background): Ignore (Inherited from Parent)
                         2. SIGINT (Child is Foreground): Default (Set here)
-                        3. SIGSTP (All Children): Ignore (Set here)
+                        3. SIGTSP (All Children): Ignore (Set here)
                     ---------------------------------------------------------------------*/
+
+                    // Ignore SIGTSTP
+                    SIGTSTP_action.sa_handler = SIG_IGN;
+                    sigaction(SIGTSTP, &SIGTSTP_action, NULL);
 
                     // Set Default Handling for SIG_INT if this is a foreground process only.
                     if(cmd.background == false){
                         SIGINT_action.sa_handler = SIG_DFL;
                         sigaction(SIGINT, &SIGINT_action, NULL);
                     }
+
 
                     /*--------------------------------------------------------------------
                       Prepare arguments for execvp()
