@@ -24,6 +24,7 @@ typedef struct {
     bool background;
 } Command;
 
+
 /**********************************************************************
     Function: parseCommand(userInput string, Command *cmd):
 
@@ -268,7 +269,19 @@ int main(){
     int lastForegroundStatus = 0;
 
 
-    // Main Prompt
+    /*----------------------------------------------------
+     Signal Handling
+    -----------------------------------------------------*/
+    
+    // Parent ignores SIGINT
+    struct sigaction SIGINT_action = {};
+	SIGINT_action.sa_handler = SIG_IGN;
+    sigaction(SIGINT, &SIGINT_action, NULL);
+
+
+    /*----------------------------------------------------
+     Main Prompt Loop
+    -----------------------------------------------------*/
     command_prompt:
     while(1){
     
@@ -332,10 +345,6 @@ int main(){
                 printf("Last foreground process, pid %d, exited with status %d\n", lastForegroundPID, WEXITSTATUS(lastForegroundStatus));
             } else if (WIFSIGNALED(lastForegroundStatus)){
                 printf("The processed received a signal: %d\n", WTERMSIG(lastForegroundStatus));
-            } else if (WIFSTOPPED(lastForegroundStatus)){
-                printf("The process was stopped by signal %d\n", WSTOPSIG(lastForegroundStatus));
-            } else if(WIFCONTINUED(lastForegroundStatus)){
-                printf("Process is resumed.\n");
             }
         }
 
@@ -361,6 +370,13 @@ int main(){
 
                 // Case -> Child Process
                 case 0:;
+
+                    // Set Default Handling for SIG_INT if this is a foreground process only.
+                    if(cmd.background == false){
+                        SIGINT_action.sa_handler = SIG_DFL;
+                        sigaction(SIGINT, &SIGINT_action, NULL);
+                    }
+                
                     // Create list of pointers to arg strings with Null terminator at end.
                     char *newargv[513] = {};
                     for (int i=0;i<513;i++){
@@ -375,9 +391,9 @@ int main(){
                     /***************************************
                      Handle Redirects
                     ****************************************/
-                   int targetFD;
-                   int sourceFD;
-                   int result;
+                    int targetFD;
+                    int sourceFD;
+                    int result;
 
                     // Case -> Redirect Input found in command.
                     if(cmd.redir_path_in[0] != 0){
@@ -429,6 +445,11 @@ int main(){
                         lastForegroundPID = childPid;
                         childPid = waitpid(childPid, &wstatus, 0);
                         lastForegroundStatus = wstatus;
+
+                        // Indicate if child was terminated by a signal
+                        if (WIFSIGNALED(wstatus)){
+                            printf("\nChild process was terminated by signal: %d\n", childPid, WTERMSIG(wstatus));
+                        }
                     }
 
                     // Monitor child process -> Background child process. (non-blocking)
@@ -446,8 +467,6 @@ int main(){
                         // Announce and add to PID list for tracking.
                         printf("Executing child process %d in the background.\n", childPid);
                         insertPID(PIDS, childPid);
-
-
                     }
 
                     // Check each Child process for completion
