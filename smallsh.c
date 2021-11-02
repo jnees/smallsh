@@ -24,6 +24,8 @@ typedef struct {
     bool background;
 } Command;
 
+int foreground_only_mode = 0;
+
 
 /**********************************************************************
     Function: parseCommand(userInput string, Command *cmd):
@@ -87,9 +89,12 @@ void parseCommand(char * input, Command *cmd){
             // case token is all other words -> Copy to args and exapand variable if necessary.
             default:
 
-                /************************************************
-                   Variable Expansion
-                *************************************************/
+                /*------------------------------------------------
+                   Variable Expansion:
+
+                   Find and replace "$$" in the argument with the 
+                   current process id.
+                -------------------------------------------------*/
 
                 // Case -> No expansion needed
                 if (!strstr(token, "$$")){
@@ -252,9 +257,22 @@ int exitProgram(int *PIDs){
     
 }
 
+/***********************************************************************
+ Function: SIGSTOP_handler()
+ 
+ Displays message and toggles foreground_only_mode, which causes
+ the shell to ignore & arguments in subsequent commands.
+ ************************************************************************/ 
+void SIGSTOP_handler(void){
+    printf("Entering foreground-only mode (& is now ignored)\n");
+    foreground_only_mode = !foreground_only_mode;
+}
+
+
 /**********************************************************************
     Function: main ()
-
+    The main shell function. Continuously prompts a user for shell
+    commands and executes them until the user types the exit command.
 ************************************************************************/ 
 
 int main(){
@@ -281,15 +299,19 @@ int main(){
 
     /*----------------------------------------------------
      Main Prompt Loop
+     : user enters a command
     -----------------------------------------------------*/
     command_prompt:
     while(1){
     
-        /**********************************************************
-         Reset command struct -> 
-         This program reuses the commend struct for each new 
-         command in the process.
-        ***********************************************************/
+        /*---------------------------------------------------------
+            Get a new command from the user.
+
+            The user command is stored in a Command struct. If
+            the user provides an input which is not a comment
+            or blank, then it is parsed to the Command struct
+            and processed.
+        ----------------------------------------------------------*/
         Command cmd = {};
 
         // Clear in/out redirect paths
@@ -315,15 +337,14 @@ int main(){
             goto command_prompt;
         } else {
             parseCommand(userInput, &cmd);
-            // Debugging
-            // printf("arg 0: %s\n", cmd.args[0]);
-            // printf("arg 1: %s\n", cmd.args[1]);
-            // printf("arg 2: %s\n", cmd.args[2]); 
         }
 
         /*-------------------------------------------------------
          Handle built in commands
            cd, exit, and status
+
+           These commands are handled in the main process rather
+           than by forking to a child process.
         --------------------------------------------------------*/
         // CD -> Change directories. Default is HOME
         cd = strncmp(cmd.args[0], "cd", 2);
@@ -342,9 +363,12 @@ int main(){
         if(status == 0 && strlen(cmd.args[0]) == 6){
             // Case -> Child has exited
             if(WIFEXITED(lastForegroundStatus)){
-                printf("Last foreground process, pid %d, exited with status %d\n", lastForegroundPID, WEXITSTATUS(lastForegroundStatus));
+                printf("Last foreground process, pid %d, exited with status %d\n", 
+                        lastForegroundPID, 
+                        WEXITSTATUS(lastForegroundStatus));
             } else if (WIFSIGNALED(lastForegroundStatus)){
-                printf("The processed received a signal: %d\n", WTERMSIG(lastForegroundStatus));
+                printf("The processed received a signal: %d\n", 
+                        WTERMSIG(lastForegroundStatus));
             }
         }
 
@@ -371,11 +395,26 @@ int main(){
                 // Case -> Child Process
                 case 0:;
 
+                    /*--------------------------------------------------------------------
+                      Signal Handling For Child Processes:
+                        1. SIGINT (Child is Background): Ignore (Inherited from Parent)
+                        2. SIGINT (Child is Foreground): Default (Set here)
+                        3. SIGSTP (All Children): Ignore (Set here)
+                    ---------------------------------------------------------------------*/
+
                     // Set Default Handling for SIG_INT if this is a foreground process only.
                     if(cmd.background == false){
                         SIGINT_action.sa_handler = SIG_DFL;
                         sigaction(SIGINT, &SIGINT_action, NULL);
                     }
+
+                    /*--------------------------------------------------------------------
+                      Prepare arguments for execvp()
+                        1. Arguments must be array of pointers
+                        2. Last arg must be null pointer
+                        3. First arg must be name of command (Example: ls)
+                        4. Subsequent args follow the command (Example: -al)
+                    ---------------------------------------------------------------------*/
                 
                     // Create list of pointers to arg strings with Null terminator at end.
                     char *newargv[513] = {};
@@ -388,9 +427,16 @@ int main(){
                     }
                     newargv[512] = NULL;
 
-                    /***************************************
-                     Handle Redirects
-                    ****************************************/
+                    /*-------------------------------------------------
+                     Handle Redirects and execute.
+
+                     The symbols for redirect (<, >) have been parsed 
+                     out of the args already. The filepaths have also 
+                     been parsed out and saved in the cmd struct.
+
+                     Here this information is used to redirect the
+                     stdin and stdout streams prior to calling execvp.
+                    -------------------------------------------------*/
                     int targetFD;
                     int sourceFD;
                     int result;
@@ -437,39 +483,66 @@ int main(){
                     perror("Execvp");
                     exit(EXIT_FAILURE);
 
+                /*-----------------------------------------------
+                Case -> Default: Parent Process
 
-                // Case -> Parent Process
+                The parent handles logic for waiting and 
+                monitoring of the child process here. When the
+                child process is complete or if the process was
+                a non-blocking background process, the parent
+                returns control of the program to the user.
+                ------------------------------------------------*/
                 default:
-                    // Monitor child process -> Foreground child process (blocking)
-                    if (cmd.background == 0){
+
+                    /*--------------------------------------------
+                    Case 1: Child Process is Foreground
+
+                    This type of process is called when a user
+                    does not use the & symbol in their command.
+                    The parent will wait until the process
+                    is complete before returning control to the
+                    user (blocking).
+                    ----------------------------------------------*/
+                    if ((cmd.background == 0) | (foreground_only_mode == 1)){
                         lastForegroundPID = childPid;
                         childPid = waitpid(childPid, &wstatus, 0);
                         lastForegroundStatus = wstatus;
 
                         // Indicate if child was terminated by a signal
                         if (WIFSIGNALED(wstatus)){
-                            printf("\nChild process was terminated by signal: %d\n", childPid, WTERMSIG(wstatus));
+                            printf("\nChild process was terminated by signal: %d\n", WTERMSIG(wstatus));
+                            lastForegroundStatus = wstatus;
                         }
                     }
 
-                    // Monitor child process -> Background child process. (non-blocking)
-                    if (cmd.background == 1){
-                        /***********************************************
-                        When a process is launched;
-                            1. Announce it.
-                            2. Add to PIDs list.
-                        After Every iteration:
-                            1. Check every PID in list using waitpid( WNOHANG )
-                            2. If childPid returned is not 0, announce that
-                            the process has finished and its exitstatus
-                            3. Also if finished, remove from PIDs list.
-                        ************************************************/
+                    /*--------------------------------------------
+                    Case 2: Child Process is Background
+
+                    This type of process is called when a user
+                    includes the & symbol in their command. The
+                    child process does not block, but instead
+                    runs in the background and control of the
+                    program is returned to the user immediately.
+                    ----------------------------------------------*/
+                    if ((cmd.background == 1) && (foreground_only_mode == 0)){
                         // Announce and add to PID list for tracking.
                         printf("Executing child process %d in the background.\n", childPid);
                         insertPID(PIDS, childPid);
                     }
 
-                    // Check each Child process for completion
+
+                    /*--------------------------------------------------------
+                     After any new command (blocking or non):
+                        1. Check every PID in list using waitpid( WNOHANG )
+
+                        2. If childPid returned is not 0, announce that
+                        the process has finished and explain why it exited.
+                        This could be termination by reaching end of process
+                        or termination by signal.
+
+                        3. Remove any completed process ids from the tracking
+                        array.
+                    ---------------------------------------------------------*/
                     for(int i = 0; i < MAX_PIDS; i++){
                         if (PIDS[i] != 0){
                             childPid = waitpid(PIDS[i], &wstatus, WNOHANG);
@@ -486,8 +559,7 @@ int main(){
                         }
                     }
 
-
-                    // End of Parent Process
+                    // End of Parent Process -> Control returns to the user via command_prompt loop.
                     break;
             }
         }
